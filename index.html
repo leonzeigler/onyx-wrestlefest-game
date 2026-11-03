@@ -206,7 +206,7 @@
         <b>Whip to the ropes</b> G &nbsp;·&nbsp; <b>Run</b> hold SHIFT (or Punch+Kick together) &nbsp;·&nbsp; <b>Finisher</b> E — it glows gold on touch when it's charged.
         On a phone the touch pad carries <b>PUNCH · KICK · GRAB · WHIP · RUN (hold) · FINISH</b>, and on a controller: <span class="pad">stick/D-pad move · A punch · B kick · X grab · LT whip · LB hold to run · RB finisher · Start = start</span>.<br />
         <b>TAG MATCH adds:</b> <b>Tag</b> V near your partner &nbsp;·&nbsp; <b>Apron lean punch</b> Q — your partner on the apron leans over the ropes and throws it.
-        The touch pad adds <b>TAG · APRON</b>, and a controller adds <span class="pad">Y = tag · RT = apron punch</span>. Tag matches only — in the modes below there is no partner, so those buttons are not on the pad and the tag / apron keys and buttons do nothing in the match.<br />
+        The touch pad adds <b>TAG · APRON</b>, and an Xbox controller adds <span class="pad">Y = tag · RT = apron punch</span>. Tag matches only — in the modes below there is no partner, so those buttons are not on the pad and the tag / apron keys and buttons do nothing in the match.<br />
         <b>SINGLES (one-on-one):</b> the Every-match set only — no Tag, no Apron. On the fighter select, press <b>V</b> to switch VS CPU / 2P VERSUS.
         <b>Singles 2P versus:</b> Player 2 picks second, then fights with <b>Arrow keys</b> + <b>,</b> punch · <b>.</b> kick · <b>;</b> grab · <b>'</b> whip · <b>]</b> finisher · right SHIFT run (or a second controller on the same singles set).<br />
         <b>ROYAL RUMBLE:</b> the Every-match set only — no Tag, no Apron. Throw rivals out over the ropes to eliminate them.<br />
@@ -3093,12 +3093,79 @@ function setupHero(){
   if(p2Active()){ const h2=activeOf(1); if(h2)h2.isPlayer2=true; }
 }
 
+/* ===== XBOX CONTROLLER — standard Gamepad API mapping =====
+   Xbox One / Series / Elite / Xbox 360 wired/USB/Bluetooth controllers expose
+   the same browser 'standard' layout when supported by the browser/OS.
+   No non-standard input keys are sent to Muse's multiplayer relay. */
+const WF_XBOX={punch:0,kick:1,grapple:2,tag:3,run:4,fin:5,whip:6,apron:7,climb:8,start:9,guard:10,counter:11,up:12,down:13,left:14,right:15};
+const WF_XBOX_DEADZONE=.31, WF_XBOX_TRIGGER_THRESHOLD=.45;
+function wfPadForSlot(slot){
+  let pads=[];
+  try{pads=Array.from(navigator.getGamepads?.()||[]);}catch(_){}
+  const exact=pads[slot];
+  if(exact&&exact.connected!==false)return exact;
+  // Windows sometimes reassigns a reconnected single pad to another index.
+  if(slot===0){const active=pads.filter(p=>p&&p.connected!==false);if(active.length===1)return active[0];}
+  return null;
+}
+function wfXboxButton(pad,i){
+  const b=pad?.buttons?.[i];
+  return !!(b&&(b.pressed||Number(b.value||0)>=WF_XBOX_TRIGGER_THRESHOLD));
+}
+function wfXboxInput(slot){
+  const pad=wfPadForSlot(slot), b=i=>wfXboxButton(pad,i);
+  const ax=pad?.axes?.[0]||0, ay=pad?.axes?.[1]||0;
+  const a=Math.abs(ax)>=WF_XBOX_DEADZONE?ax:0;
+  const v=Math.abs(ay)>=WF_XBOX_DEADZONE?ay:0;
+  return {left:a<0||b(WF_XBOX.left),right:a>0||b(WF_XBOX.right),
+    up:v<0||b(WF_XBOX.up),down:v>0||b(WF_XBOX.down),
+    punch:b(WF_XBOX.punch),kick:b(WF_XBOX.kick),grapple:b(WF_XBOX.grapple),
+    tag:b(WF_XBOX.tag),run:b(WF_XBOX.run),fin:b(WF_XBOX.fin),
+    whip:b(WF_XBOX.whip),apron:b(WF_XBOX.apron),
+    guard:b(WF_XBOX.guard),counter:b(WF_XBOX.counter),
+    climb:b(WF_XBOX.climb),start:b(WF_XBOX.start)};
+}
+// Keep the regular one-player layout, the 2P layout, and the online
+// guest snapshots aligned with the same exact Xbox button mapping.
+let wfXboxMenuWasDown=false, wfXboxMenuLast=0, wfXboxMenuNavDir='', wfXboxMenuNavNext=0;
+function wfXboxPausePoll(){
+  const down=wfXboxInput(0).start;
+  const now=performance.now();
+  if(down&&!wfXboxMenuWasDown&&screen==='match'&&now-wfXboxMenuLast>175){
+    wfXboxMenuLast=now;
+    wfTogglePause();
+  }
+  wfXboxMenuWasDown=down;
+}
+function wfMenuNav(inp){
+  const dir=inp.left?'left':inp.right?'right':inp.up?'up':inp.down?'down':'';
+  if(!dir){wfXboxMenuNavDir='';wfXboxMenuNavNext=0;return '';}
+  const now=performance.now();
+  if(dir!==wfXboxMenuNavDir){wfXboxMenuNavDir=dir;wfXboxMenuNavNext=now+380;return dir;}
+  if(now>=wfXboxMenuNavNext){wfXboxMenuNavNext=now+175;return dir;}
+  return '';
+}
+let wfXboxStatusLast='';
+function wfUpdateXboxStatus(){
+  const el=document.getElementById('wfXboxStatus'); if(!el)return;
+  const pad=wfPadForSlot(0);
+  const pads=Array.from(navigator.getGamepads?.()||[]).filter(p=>p&&p.connected!==false);
+  const msg=pad?'CONNECTED · '+pads.length+' PAD'+(pads.length===1?'':'S'):'PRESS A / MENU TO CONNECT';
+  if(msg!==wfXboxStatusLast){el.textContent=msg;el.style.color=pad?'#8df5d1':'#e3bf74';wfXboxStatusLast=msg;}
+  const test=document.getElementById('wfXboxButtonTest');
+  if(test&&document.getElementById('wfXboxPanel')?.open){
+    const b=wfXboxInput(0); const active=['punch','kick','grapple','tag','run','fin','whip','apron','guard','counter','climb','start','up','down','left','right'].filter(k=>b[k]);
+    test.textContent=pad?(active.length?'Pressed: '+active.join(' · '):'Controller ready — press any button to test'):'Connect a controller, then press A to activate it';
+  }
+}
+addEventListener('gamepadconnected',()=>{wfXboxStatusLast='';wfUpdateXboxStatus();});
+addEventListener('gamepaddisconnected',()=>{wfXboxStatusLast='';wfUpdateXboxStatus();});
+setInterval(wfUpdateXboxStatus,250);
+window.__wfXbox={mapping:WF_XBOX,input:wfXboxInput,pad:wfPadForSlot,button:wfXboxButton,pausePoll:wfXboxPausePoll};
+
 /* ---------- input snapshot ---------- */
 function readInput(){
-  const pad=navigator.getGamepads?navigator.getGamepads()[0]:null;
-  const ax=pad?pad.axes[0]:0, ay=pad?pad.axes[1]:0;
-  const btn=i=>!!(pad&&pad.buttons[i]&&pad.buttons[i].pressed);
-  const dpad={up:btn(12),down:btn(13),left:btn(14),right:btn(15)};
+  const gp=wfXboxInput(0);
   const p2=p2Active(); // singles versus: the arrow keys belong to Player 2
   /* MATCH-AWARE CONTROLS: tag and apron punch are TAG MATCH controls.
      Inside a singles or rumble match every tag/apron binding — keys,
@@ -3107,25 +3174,25 @@ function readInput(){
      and the in-match action handlers stay mode-gated as a backstop. */
   const tagOn = screen!=='match' || mode==='tag';
   return {
-    left: (!p2&&keys.ArrowLeft)||keys.KeyA||keyDir.left||touchIn.left||ax<-.35||dpad.left,
-    right: (!p2&&keys.ArrowRight)||keys.KeyD||keyDir.right||touchIn.right||ax>.35||dpad.right,
-    up: (!p2&&keys.ArrowUp)||keys.KeyW||keyDir.up||touchIn.up||ay<-.35||dpad.up,
-    down: (!p2&&keys.ArrowDown)||keys.KeyS||keyDir.down||touchIn.down||ay>.35||dpad.down,
-    punch: keys.KeyZ||keys.KeyJ||keyTap.punch||touchIn.punch||btn(0),
-    kick: keys.KeyX||keys.KeyK||keyTap.kick||touchIn.kick||btn(1),
-    tag: tagOn&&(keys.KeyV||keys.KeyL||keyTap.tag||touchIn.tag||btn(3)),
+    left: (!p2&&keys.ArrowLeft)||keys.KeyA||keyDir.left||touchIn.left||gp.left,
+    right: (!p2&&keys.ArrowRight)||keys.KeyD||keyDir.right||touchIn.right||gp.right,
+    up: (!p2&&keys.ArrowUp)||keys.KeyW||keyDir.up||touchIn.up||gp.up,
+    down: (!p2&&keys.ArrowDown)||keys.KeyS||keyDir.down||touchIn.down||gp.down,
+    punch: keys.KeyZ||keys.KeyJ||keyTap.punch||touchIn.punch||gp.punch,
+    kick: keys.KeyX||keys.KeyK||keyTap.kick||touchIn.kick||gp.kick,
+    tag: tagOn&&(keys.KeyV||keys.KeyL||keyTap.tag||touchIn.tag||gp.tag),
     /* dedicated move buttons (owner directive: every move gets its
        own control, nothing hides behind combos alone — the old
        combos still work: Punch+Kick held still runs, Kick in a
        grapple still whips) */
-    grapple: keys.KeyF||keyTap.grapple||touchIn.grapple||btn(2),
-    whip: keys.KeyG||keyTap.whip||touchIn.whip||btn(6),
-    fin: keys.KeyE||keyTap.fin||touchIn.fin||btn(5),
-    apron: tagOn&&(keys.KeyQ||keyTap.apron||touchIn.apron||btn(7)),
-    run: keys.ShiftLeft||keys.ShiftRight||touchIn.run||btn(4),
-    guard: keys.KeyY||touchIn.guard||btn(10),
-    counter: keys.KeyT||touchIn.counter||btn(11),
-    start: keys.Space||btn(9),
+    grapple: keys.KeyF||keyTap.grapple||touchIn.grapple||gp.grapple,
+    whip: keys.KeyG||keyTap.whip||touchIn.whip||gp.whip,
+    fin: keys.KeyE||keyTap.fin||touchIn.fin||gp.fin,
+    apron: tagOn&&(keys.KeyQ||keyTap.apron||touchIn.apron||gp.apron),
+    run: keys.ShiftLeft||keys.ShiftRight||touchIn.run||gp.run,
+    guard: keys.KeyY||touchIn.guard||gp.guard,
+    counter: keys.KeyT||touchIn.counter||gp.counter,
+    start: keys.Space||gp.start,
   };
 }
 /* PLAYER 2 (singles versus): a second gamepad, or the keyboard's
@@ -3133,27 +3200,24 @@ function readInput(){
    apron (\) bindings ride along in the snapshot but are gated off
    in a match by the same match-aware rule as Player 1's */
 function readInput2(){
-  const pad=navigator.getGamepads?navigator.getGamepads()[1]:null;
-  const ax=pad?pad.axes[0]:0, ay=pad?pad.axes[1]:0;
-  const btn=i=>!!(pad&&pad.buttons[i]&&pad.buttons[i].pressed);
-  const dpad={up:btn(12),down:btn(13),left:btn(14),right:btn(15)};
+  const gp=wfXboxInput(1);
   const tagOn = screen!=='match' || mode==='tag'; // same match-aware gate as Player 1 (see readInput)
   return {
-    left: keys.ArrowLeft||ax<-.35||dpad.left,
-    right: keys.ArrowRight||ax>.35||dpad.right,
-    up: keys.ArrowUp||ay<-.35||dpad.up,
-    down: keys.ArrowDown||ay>.35||dpad.down,
-    punch: keys.Comma||btn(0),
-    kick: keys.Period||btn(1),
-    tag: tagOn&&(keys.Slash||btn(3)),
-    grapple: keys.Semicolon||btn(2),
-    whip: keys.Quote||btn(6),
-    fin: keys.BracketRight||btn(5),
-    apron: tagOn&&(keys.Backslash||btn(7)),
-    run: keys.ShiftRight||btn(4),
-    guard: keys.KeyO||btn(10),
-    counter: keys.BracketLeft||btn(11),
-    start: btn(9),
+    left: keys.ArrowLeft||gp.left,
+    right: keys.ArrowRight||gp.right,
+    up: keys.ArrowUp||gp.up,
+    down: keys.ArrowDown||gp.down,
+    punch: keys.Comma||gp.punch,
+    kick: keys.Period||gp.kick,
+    tag: tagOn&&(keys.Slash||gp.tag),
+    grapple: keys.Semicolon||gp.grapple,
+    whip: keys.Quote||gp.whip,
+    fin: keys.BracketRight||gp.fin,
+    apron: tagOn&&(keys.Backslash||gp.apron),
+    run: keys.ShiftRight||gp.run,
+    guard: keys.KeyO||gp.guard,
+    counter: keys.BracketLeft||gp.counter,
+    start: gp.start,
   };
 }
 let prevIn={punch:0,kick:0,tag:0,start:0};
@@ -4233,20 +4297,24 @@ function advance(inp){
   const startHit=startQueued||pressed(inp,'start')||pressed(inp,'punch');
   if(screen==='title'&&startHit){ screen='mode'; sfxConfirm(); }
   else if(screen==='mode'){
+    if(pressed(inp,'kick')){screen='title';return;}
+    const nav=wfMenuNav(inp);
     const order=['singles','tag','rumble'];
     stipulation='standard'; // the GAME SELECT card order, left to right
-    if(pressed(inp,'right')||pressed(inp,'down')){ mode=order[(order.indexOf(mode)+1)%3]; sfxSelect(); }
-    if(pressed(inp,'left')||pressed(inp,'up')){ mode=order[(order.indexOf(mode)+2)%3]; sfxSelect(); }
-    if(startQueued||pressed(inp,'start')){ screen='select'; selCursor=0; selPicks=[]; selPhase=0; p2Pick=null; sfxConfirm(); }
+    if(nav==='right'||nav==='down'){ mode=order[(order.indexOf(mode)+1)%3]; sfxSelect(); }
+    if(nav==='left'||nav==='up'){ mode=order[(order.indexOf(mode)+2)%3]; sfxSelect(); }
+    if(startQueued||pressed(inp,'start')||pressed(inp,'punch')||pressed(inp,'grapple')){ screen='select'; selCursor=0; selPicks=[]; selPhase=0; p2Pick=null; sfxConfirm(); }
   }
   else if(screen==='select'){
+    if(pressed(inp,'kick')){screen='mode';return;}
+    const nav=wfMenuNav(inp);
     const cols=3;
-    if(pressed(inp,'left'))selCursor=(selCursor+ROSTER.length-1)%ROSTER.length;
-    if(pressed(inp,'right'))selCursor=(selCursor+1)%ROSTER.length;
-    if(pressed(inp,'up'))selCursor=(selCursor+ROSTER.length-cols)%ROSTER.length;
-    if(pressed(inp,'down'))selCursor=(selCursor+cols)%ROSTER.length;
+    if(nav==='left')selCursor=(selCursor+ROSTER.length-1)%ROSTER.length;
+    if(nav==='right')selCursor=(selCursor+1)%ROSTER.length;
+    if(nav==='up')selCursor=(selCursor+ROSTER.length-cols)%ROSTER.length;
+    if(nav==='down')selCursor=(selCursor+cols)%ROSTER.length;
     if(mode==='singles'&&selPhase===0&&pressed(inp,'tag')){ singles2P=!singles2P; sfxSelect(); }
-    if(pressed(inp,'punch')||startQueued||pressed(inp,'start')){
+    if(pressed(inp,'punch')||pressed(inp,'grapple')||startQueued||pressed(inp,'start')){
       const id=ROSTER[selCursor].id;
       if(mode==='singles'&&singles2P&&selPhase===1){ // 2P hot-seat pick: Player 2 chooses his fighter
         if(id!==selPicks[0]){ p2Pick=id; matchCpuPicks=[id]; sfxConfirm(); screen='vs'; vsT=0; }
@@ -4258,9 +4326,9 @@ function advance(inp){
           else { rollCpuPicks(); screen='vs'; vsT=0; } } }
     }
   }
-  else if(screen==='vs'&&(startQueued||pressed(inp,'start'))){ goEntrance(); }
+  else if(screen==='vs'&&(startQueued||pressed(inp,'start')||pressed(inp,'punch'))){ goEntrance(); }
   else if(screen==='entrance'&&(startQueued||pressed(inp,'start')||pressed(inp,'punch'))){ startMatch(); }
-  else if(screen==='over'&&(startQueued||pressed(inp,'start'))){
+  else if(screen==='over'&&(startQueued||pressed(inp,'start')||pressed(inp,'punch'))){
     if(careerActive&&matchOver&&matchOver.win&&careerRound<ROSTER.length-1){
       matchOver=null; matchCpuPicks=[careerOpponent()]; screen='vs'; vsT=0; sfxConfirm();
     }else{
@@ -4327,7 +4395,7 @@ let wfPaused=false, wfCounterUntil=0, wfCounterCooldown=0;
 const wfPausePanel=document.createElement('div');
 wfPausePanel.id='wfPausePanel';
 wfPausePanel.style.cssText='display:none;position:fixed;z-index:99999;inset:0;background:rgba(3,6,21,.92);color:#fff;align-items:center;justify-content:center;flex-direction:column;text-align:center;font:16px system-ui;padding:20px';
-wfPausePanel.innerHTML='<h1 style="color:#ffcf42">ONYX WRESTLEFEST — PAUSED</h1><p>WASD / Arrows: move · Z/J: punch · X/K: kick · F: grapple · G: whip · E: finisher</p><p><b>Y: hold BLOCK</b> · <b>T: timed COUNTER</b> · 3 consecutive hits = combo knockdown · P2 guard O / counter [</p><p><b>RUN + PUNCH</b> = Clothesline · <b>RUN + KICK</b> = Dropkick (land on the mat after kicking).</p><p><b>GRAPPLE:</b> Hold ↑/↓/←/→ then tap Punch or Kick for 8 throws (suplex, scoop slam, hip toss, backbreaker, powerbomb, piledriver, snapmare, neckbreaker). Kick without direction / G = Irish Whip.</p><p>Stamina is blue beneath the health bar. Running, striking and blocking cost stamina. H: climb in cage/ladder matches · Escape: resume.</p><button id="wfResume" style="padding:14px 32px;background:#ffd21f;border:0;border-radius:8px;font-weight:900;cursor:pointer">RESUME MATCH</button>';
+wfPausePanel.innerHTML='<h1 style="color:#ffcf42">ONYX WRESTLEFEST — PAUSED</h1><p><b>Xbox:</b> Left stick / D-pad move · A Punch · B Kick · X Grapple · LB Run · RB Finisher · LT Whip · Menu Resume · View Climb · L3 Block · R3 Counter</p><p>WASD / Arrows: move · Z/J: punch · X/K: kick · F: grapple · G: whip · E: finisher</p><p><b>Y: hold BLOCK</b> · <b>T: timed COUNTER</b> · 3 consecutive hits = combo knockdown · P2 guard O / counter [</p><p><b>RUN + PUNCH</b> = Clothesline · <b>RUN + KICK</b> = Dropkick (land on the mat after kicking).</p><p><b>GRAPPLE:</b> Hold ↑/↓/←/→ then tap Punch or Kick for 8 throws (suplex, scoop slam, hip toss, backbreaker, powerbomb, piledriver, snapmare, neckbreaker). Kick without direction / G = Irish Whip.</p><p>Stamina is blue beneath the health bar. Running, striking and blocking cost stamina. H: climb in cage/ladder matches · Escape: resume.</p><button id="wfResume" style="padding:14px 32px;background:#ffd21f;border:0;border-radius:8px;font-weight:900;cursor:pointer">RESUME MATCH</button>';
 document.body.appendChild(wfPausePanel);
 function wfTogglePause(force){ wfPaused=typeof force==='boolean'?force:!wfPaused;wfPausePanel.style.display=wfPaused?'flex':'none'; }
 wfPausePanel.querySelector('#wfResume').addEventListener('click',()=>wfTogglePause(false));
@@ -4429,7 +4497,7 @@ function tickStipulation(dt,inp){
   climbCooldown=Math.max(0,climbCooldown-dt);
   const hero=heroEnt(), enemy=activeOf(1);
   if(!hero||!enemy)return;
-  const hActive=!!(keys.KeyH||climbTap||(navigator.getGamepads&&navigator.getGamepads()[0]?.buttons[8]?.pressed));
+  const hActive=!!(keys.KeyH||climbTap||wfXboxInput(0).climb);
   climbTap=false;
   for(const [i,e] of [hero,enemy].entries()){
     if(!canClimb(e)){climbProgress[i]=Math.max(0,climbProgress[i]-dt*.22);continue;}
@@ -4561,6 +4629,7 @@ function frame(ts){
      impossible: a bad frame now costs one frame, never the match. */
   ctx.setTransform(1,0,0,1,0,0); ctx.globalAlpha=1; ctx.globalCompositeOperation='source-over';
   ctx.shadowBlur=0; ctx.shadowColor='rgba(0,0,0,0)'; if('filter' in ctx) ctx.filter='none';
+  wfXboxPausePoll(); // Menu toggles pause even while the simulation is paused.
   if(wfPaused){
     // Keep the animation clock alive without advancing the match simulation.
     return;
@@ -4790,11 +4859,7 @@ window.__wf={
 
 /* Multiplayer extension: host-authoritative inputs and video snapshots. */
 let wfSixPlayer=false, wfOnline=null, wfRemoteInputs={}, wfPlayerInputs=[], wfLastInputs=[], wfRoomCode='';
-function wfPadInput(index){
- const pad=navigator.getGamepads?.()[index]; const b=i=>!!pad?.buttons?.[i]?.pressed;
- const ax=pad?.axes?.[0]||0, ay=pad?.axes?.[1]||0;
- return {left:ax<-.3||b(14),right:ax>.3||b(15),up:ay<-.3||b(12),down:ay>.3||b(13),punch:b(0),kick:b(1),grapple:b(2),tag:b(3),run:b(4),fin:b(5),whip:b(6),apron:b(7),guard:b(10),counter:b(11),start:b(9)};
-}
+function wfPadInput(index){ return wfXboxInput(index); }
 function wfSetSixPlayer(on){wfSixPlayer=!!on; document.getElementById('wfMultiStatus').textContent=wfSixPlayer?'6-player Rumble enabled: select Rumble and start. Gamepads 1–6.':'6-player mode disabled';}
 function wfJoinRoom(host){
  const url=document.getElementById('wfServer').value.trim(),room=document.getElementById('wfRoom').value.trim().toUpperCase();
@@ -4824,5 +4889,23 @@ window.__wfCombat={version:'2026-11-playable-combat',
  history(){return combatPopups.map(p=>p.label);}
 };
 </script>
+<div id="wfXboxWidget" style="position:fixed;left:8px;top:8px;z-index:9998;background:#09091dec;color:#fff;border:1px solid #8c63da;border-radius:8px;font:11px system-ui;max-width:min(315px,94vw);box-shadow:0 4px 15px #0009">
+  <details id="wfXboxPanel">
+    <summary style="padding:7px 9px;cursor:pointer;list-style:none"><b>🎮 XBOX PAD</b> <span id="wfXboxStatus" style="color:#e3bf74;margin-left:4px">PRESS A / MENU TO CONNECT</span> ▾</summary>
+    <div style="padding:4px 10px 10px;line-height:1.6">
+      <b>STICKS &amp; ATTACKS</b><div>Left stick / D-pad — Move + grapple directions</div>
+      <div><b>A</b> Punch · <b>B</b> Kick · <b>X</b> Grapple · <b>Y</b> Tag (tag matches)</div>
+      <div><b>LB</b> Hold Run · <b>RB</b> Finisher</div>
+      <div><b>LT</b> Irish Whip · <b>RT</b> Apron attack (tag matches)</div>
+      <div><b>L3</b> Hold Block · <b>R3</b> Timed Counter</div>
+      <div><b>View</b> Hold Climb (cage / ladder)</div>
+      <div><b>Menu</b> Start / Pause / Resume</div>
+      <b>RUNNING ATTACKS</b><div>LB + A — Clothesline · LB + B — Dropkick</div>
+      <b>IN A GRAPPLE</b><div>Direction + A/B chooses one of 8 throws.<br>LT / neutral B — Irish Whip.</div>
+      <b>MENUS</b><div>Stick / D-pad select · A confirm · B back · Y toggle 2P on Singles · Menu proceed</div>
+      <div id="wfXboxButtonTest" style="border-top:1px solid #594486;margin-top:6px;padding-top:5px;color:#88eac7">Connect a controller, then press A to activate it</div>
+    </div>
+  </details>
+</div>
 <div id="wfMultiplayer" style="position:fixed;right:8px;top:8px;z-index:9999;background:#080f29ee;color:white;border:2px solid #ffd21f;padding:9px;max-width:260px;font:12px system-ui;border-radius:9px"><details><summary style="cursor:pointer;color:#ffd21f;font-weight:bold">MULTIPLAYER (UP TO 6)</summary><p><button onclick="wfSetSixPlayer(true)">Enable local 6-player Rumble</button></p><p>Use six connected gamepads. Player 1 can also use keyboard. Online: host runs the game and remote players send controls; spectators/players receive a low-frame-rate game preview.</p><input id="wfServer" placeholder="wss://your-server.example" style="width:100%"/><input id="wfRoom" placeholder="ROOM CODE" maxlength="12" style="width:100%"/><p><button onclick="wfJoinRoom(true)">Host room</button> <button onclick="wfJoinRoom(false)">Join room</button></p><p id="wfMultiStatus">Offline</p></details></div><img id="wfRemoteFrame" alt="Host gameplay stream" style="display:none;position:fixed;inset:0;width:100vw;height:100vh;object-fit:contain;background:black;z-index:9998;pointer-events:none"/></body>
 </html>

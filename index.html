@@ -1410,12 +1410,19 @@ function artFrameKey(e){
     const q=clamp(1-(e.stateT||0)/.42,0,1); // chamber -> in-between -> extension -> hold
     return seqPick(e,['idle','kickmid','kickmid','kick','kick','kickmid','idle'], Math.min(6,Math.floor(q*7)));
   }
+  if(st==='pairmove'&&e.pairMove){
+    const t=clamp(1-Math.max(0,e.stateT)/(WF_THROW_PROFILES[e.pairMove]?.dur||.85),0,1);
+    return seqPick(e,['reach','grapple','fin','grapple','idle'],Math.min(4,Math.floor(t*5)));
+  }
   if(st==='grapple'||st==='grapplewin'||st==='pairmove'){
     const i=Math.floor((e.animT||0)*7)%4; // the lock-up strains back and forth
     return seqPick(e,['reach','grapple','grapple','reach'],i);
   }
   if(st==='hurt') return 'hurt';
-  if(st==='lifted') return seqPick(e,['fall','hurt'],0); // paired-move victim, airborne on the shared anchor
+  if(st==='lifted'){
+    const q=clamp((e.liftT||0)/(e.liftDur||.8),0,1);
+    return seqPick(e,['grapple','hurt','fall','hurt','fall'],Math.min(4,Math.floor(q*5)));
+  } // staggered lift, suspension, then slam frames
   if(st==='thrown') return seqPick(e,['fall','hurt'],0);
   if(st==='taunt'||st==='hot'){
     const i=Math.floor((e.animT||0)*5)%4;
@@ -2804,11 +2811,78 @@ function throwOut(e,dirx){
   e.state='thrown'; e.stateT=0; e.throwT=0; e.vx=dirx*260; e.vy=-430; e.grappleWith=null;
   shake=Math.max(shake,7); thud(true);
 }
+
+/* Directional arcade lock-up system: uses existing controls and network keys.
+ * Hold a direction plus Punch / Kick during a grapple to choose the throw.
+ * The paired sprite is used where one exists for this exact wrestler pairing;
+ * the universal two-body choreography handles the remaining matchups. */
+const WF_GRAPPLE_COMBOS={
+  punch:{
+    up:   {mk:'suplex',name:'VERTICAL SUPLEX',tier:2,cost:14,damage:10,down:1.7},
+    down: {mk:'scoop',name:'SCOOP SLAM',tier:1,cost:10,damage:8,down:1.3},
+    left: {mk:'hiptoss',name:'HIP TOSS',tier:0,cost:8,damage:7,down:1.15},
+    right:{mk:'backbreaker',name:'BACKBREAKER',tier:2,cost:15,damage:11,down:1.8}
+  },
+  kick:{
+    up:   {mk:'powerbomb',name:'POWERBOMB',tier:3,cost:26,damage:14,down:2.35},
+    down: {mk:'piledriver',name:'PILEDRIVER',tier:3,cost:28,damage:15,down:2.5},
+    left: {mk:'snapmare',name:'SNAPMARE',tier:0,cost:8,damage:6,down:1.05},
+    right:{mk:'neckbreaker',name:'NECKBREAKER',tier:1,cost:16,damage:10,down:1.7}
+  }
+};
+const WF_THROW_PROFILES={
+  suplex:{lift:119,dur:1.07,side:-15},
+  scoop:{lift:89,dur:.81,side:15},
+  hiptoss:{lift:65,dur:.64,side:57},
+  backbreaker:{lift:96,dur:1.03,side:4},
+  powerbomb:{lift:155,dur:1.21,side:3},
+  piledriver:{lift:132,dur:1.18,side:-2},
+  snapmare:{lift:41,dur:.55,side:52},
+  neckbreaker:{lift:72,dur:.87,side:-39}
+};
+function wfGrappleDirection(input){
+  if(!input)return null;
+  if(input.up&&!input.down)return 'up';
+  if(input.down&&!input.up)return 'down';
+  if(input.left&&!input.right)return 'left';
+  if(input.right&&!input.left)return 'right';
+  return null;
+}
+function wfDirectionalGrapple(att,vic,choice){
+  if(!choice||!vic||att.state!=='grapple'||vic.state!=='grapple'||att.grappleWith!==vic)return false;
+  const spec=WF_GRAPPLE_COMBOS[choice.button]&&WF_GRAPPLE_COMBOS[choice.button][choice.dir];
+  if(!spec)return false;
+  if(att.endurance<spec.cost){
+    combatText(att.x,att.y-123,'NEED STAMINA','#ffad75');
+    return false;
+  }
+  att.endurance-=spec.cost;
+  att.grappleChoice=null; vic.grappleChoice=null;
+  att.grappleWith=null;vic.grappleWith=null;
+  att.grappleCd=Math.max(.75,att.grappleCd||0);
+  vic.grappleCd=Math.max(.75,vic.grappleCd||0);
+  const pair=PAIRSEQ[att.id+'>'+vic.id];
+  const frames=pair&&pair[spec.mk];
+  const hasExactArt=Array.isArray(frames)&&frames.length>0&&frames.every(pairImgOk);
+  if(hasExactArt){
+    startPairedMove(att,vic,{mk:spec.mk,name:spec.name});
+  }else{
+    startPairMove(att,vic,spec.tier,spec.damage+att.f.pow*.35,spec.down,spec.mk);
+  }
+  say(att.f.name+' — '+spec.name+'!',hasExactArt?'':'Arcade grapple!');
+  vox('name_'+att.id,att.f.name+' HITS A GRAPPLE THROW!','gmove',1800);
+  combatText(att.x,att.y-148,spec.name,'#ffd967');
+  crowdNoise();
+  wfLog.push({ev:'directional-grapple',att:att.id,vic:vic.id,move:spec.mk,direction:choice.dir,button:choice.button,pairedArt:hasExactArt,t:performance.now()});
+  return true;
+}
+
 /* ---------- grapples ---------- */
 function startGrapple(a,b){
   a.state='grapple'; b.state='grapple'; a.grappleWith=b; b.grappleWith=a;
   a.mash=0; b.mash=0; a.stateT=0; b.stateT=0;
   a.whipIntent=false; a.finIntent=false; b.whipIntent=false; b.finIntent=false;
+  a.grappleChoice=null; b.grappleChoice=null;
   a.face=b.x>=a.x?1:-1; b.face=-a.face;
   // the lock-up JOINS the bodies at grapple distance: forearms and
   // chests meet, but the two heads, torsos and legs stay DISTINCT —
@@ -2823,6 +2897,7 @@ function startGrapple(a,b){
 }
 function resolveGrapple(winner,loser,kind){
   winner.grappleWith=null; loser.grappleWith=null;
+  winner.grappleChoice=null; loser.grappleChoice=null;
   winner.state='idle'; winner.stateT=0;
   winner.grappleCd=.7; loser.grappleCd=.7; // bodies separate before they can lock up again
   // break the join cleanly: step the loser back to solid-body distance
@@ -2893,12 +2968,12 @@ const PAIR_SPEC=[
   {lift:116, dur:.94},
   {lift:124, dur:1.00},
 ];
-function startPairMove(att,vic,tier,dmgAmt,downT){
-  const spec=PAIR_SPEC[tier]||PAIR_SPEC[1];
-  att.state='pairmove'; att.stateT=spec.dur; att.pairWith=vic; att.moving=false;
+function startPairMove(att,vic,tier,dmgAmt,downT,moveKey){
+  const spec=(moveKey&&WF_THROW_PROFILES[moveKey])||PAIR_SPEC[tier]||PAIR_SPEC[1];
+  att.state='pairmove'; att.stateT=spec.dur; att.pairWith=vic; att.pairMove=moveKey||null; att.moving=false;
   att.face=vic.x>=att.x?1:-1;
   vic.state='lifted'; vic.moving=false; vic.grappleWith=null; att.grappleWith=null;
-  vic.liftBy=att; vic.liftT=0; vic.liftDur=spec.dur; vic.liftH=spec.lift;
+  vic.liftBy=att; vic.liftT=0; vic.liftDur=spec.dur; vic.liftH=spec.lift; vic.liftMove=moveKey||null;
   vic.liftTier=tier;
   vic.liftDmg=(dmgAmt!=null)?dmgAmt:(5+tier*3.4+att.f.pow*.5);
   vic.liftDownT=(downT!=null)?downT:((tier>=2||vic.hp<16)?1+tier*.3:0);
@@ -3431,7 +3506,10 @@ function updateEnt(e,dt,inp){
     e.liftT+=dt;
     const p=clamp(e.liftT/(e.liftDur||.8),0,1);
     const liftP=clamp(p/.38,0,1), ease=1-Math.pow(1-liftP,2);
-    e.x=lerp(e.liftFromX, att.x+att.face*(bodyHW(att)*.55+10), ease);
+    const wfMove=WF_THROW_PROFILES[e.liftMove]||null;
+    const wfSide=wfMove?wfMove.side||0:0;
+    const wfArc=wfSide*Math.sin(Math.PI*p);
+    e.x=lerp(e.liftFromX, att.x+att.face*(bodyHW(att)*.55+10), ease)+att.face*wfArc;
     e.y=lerp(e.liftFromY, att.y+2, ease); // one depth step in front: he is the held body
     if(p<.38) e.airH=e.liftH*ease;
     else if(p<.72) e.airH=e.liftH+Math.sin(e.liftT*22)*1.6; // strain tremble at the top of the hold
@@ -3442,7 +3520,7 @@ function updateEnt(e,dt,inp){
       dmg(e, e.liftDmg||8, tier>=2);
       if(att.pairWith===e) att.pairWith=null;
       if(att.state==='pairmove'){ att.state='idle'; att.stateT=0; }
-      e.liftBy=null;
+      e.liftBy=null;e.liftMove=null;
       if(e.state!=='down'){ // dmg may have already put him down
         if((e.liftDownT||0)>0) knockDown(e, e.liftDownT);
         else { e.state='hurt'; e.stateT=.3; }
@@ -3607,7 +3685,28 @@ function updateEnt(e,dt,inp){
     else if(isHero2&&inp2Snap){ if(pressed2(inp2Snap,'punch'))e.mash+=1.6; if(inp2Snap.punch)e.mash+=dt*2; }
     else if(e.team===0){ e.mash+=dt*(3+ e.f.pow*.3)*(e.hot>0?2.2:1); }
     else { e.mash+=dt*(2.4+e.f.pow*.3)*(e.hot>0?2.2:1); }
-    if((isHero&&pressed(inp,'kick'))||(isHero2&&inp2Snap&&pressed2(inp2Snap,'kick'))){ // Irish whip out of the grapple
+    // Direction + Punch/Kick commits one of eight actual throws.
+    // Queue taps during the first lock-up frames, then play after the grip settles.
+    const inputG=isHero?inp:(isHero2?inp2Snap:null);
+    const tapG=isHero?pressed:pressed2;
+    if(inputG){
+      const direction=wfGrappleDirection(inputG);
+      if(direction){
+        if(tapG(inputG,'punch'))e.grappleChoice={button:'punch',dir:direction};
+        else if(tapG(inputG,'kick'))e.grappleChoice={button:'kick',dir:direction};
+      }
+      if(e.grappleChoice&&e.stateT>=.20){
+        const choice=e.grappleChoice;e.grappleChoice=null;
+        // Stronger lock-ups resist premature throws; keep the original mash contest.
+        if(e.mash+1.25+(e.f.pow-vic.f.pow)*.12<vic.mash){
+          combatText(e.x,e.y-125,'GRAPPLE REVERSED','#f7a6f3');
+          resolveGrapple(vic,e,'move');return;
+        }
+        if(wfDirectionalGrapple(e,vic,choice))return;
+      }
+    }
+    // No direction + Kick retains the original quick Irish Whip.
+    if(inputG&&tapG(inputG,'kick')&&!wfGrappleDirection(inputG)){
       vic.whipBy=e; resolveGrapple(e,vic,'whip'); return;
     }
     /* dedicated grapple controls: WHIP button whips (same as Kick,
@@ -3630,7 +3729,11 @@ function updateEnt(e,dt,inp){
         }
       }
     }
-    if(!isHero&&e.team===1&&!probeNoWhip&&Math.random()<dt*.5){ vic.whipBy=e; resolveGrapple(e,vic,'whip'); return; }
+    if(!isHero&&!isHero2&&e.team===1&&e.stateT>.48&&e.mash>=vic.mash-.25&&Math.random()<dt*.70){
+      const button=Math.random()<.5?'punch':'kick',dirs=['up','down','left','right'];
+      if(wfDirectionalGrapple(e,vic,{button,dir:dirs[irnd(0,3)]}))return;
+    }
+    if(!isHero&&e.team===1&&!probeNoWhip&&Math.random()<dt*.25){ vic.whipBy=e; resolveGrapple(e,vic,'whip'); return; }
     if(e.stateT>1.15){
       const winner=e.mash>=vic.mash?e:vic, loser=winner===e?vic:e;
       // finisher from grapple when loser is ripe
@@ -4200,7 +4303,7 @@ let wfPaused=false, wfCounterUntil=0, wfCounterCooldown=0;
 const wfPausePanel=document.createElement('div');
 wfPausePanel.id='wfPausePanel';
 wfPausePanel.style.cssText='display:none;position:fixed;z-index:99999;inset:0;background:rgba(3,6,21,.92);color:#fff;align-items:center;justify-content:center;flex-direction:column;text-align:center;font:16px system-ui;padding:20px';
-wfPausePanel.innerHTML='<h1 style="color:#ffcf42">ONYX WRESTLEFEST — PAUSED</h1><p>WASD / Arrows: move · Z/J: punch · X/K: kick · F: grapple · G: whip · E: finisher</p><p><b>Y: hold BLOCK</b> · <b>T: timed COUNTER</b> · 3 consecutive hits = combo knockdown · P2 guard O / counter [</p><p>Stamina is blue beneath the health bar. Running, striking and blocking cost stamina. H: climb in cage/ladder matches · Escape: resume.</p><button id="wfResume" style="padding:14px 32px;background:#ffd21f;border:0;border-radius:8px;font-weight:900;cursor:pointer">RESUME MATCH</button>';
+wfPausePanel.innerHTML='<h1 style="color:#ffcf42">ONYX WRESTLEFEST — PAUSED</h1><p>WASD / Arrows: move · Z/J: punch · X/K: kick · F: grapple · G: whip · E: finisher</p><p><b>Y: hold BLOCK</b> · <b>T: timed COUNTER</b> · 3 consecutive hits = combo knockdown · P2 guard O / counter [</p><p><b>GRAPPLE:</b> Hold ↑/↓/←/→ then tap Punch or Kick for 8 throws (suplex, scoop slam, hip toss, backbreaker, powerbomb, piledriver, snapmare, neckbreaker). Kick without direction / G = Irish Whip.</p><p>Stamina is blue beneath the health bar. Running, striking and blocking cost stamina. H: climb in cage/ladder matches · Escape: resume.</p><button id="wfResume" style="padding:14px 32px;background:#ffd21f;border:0;border-radius:8px;font-weight:900;cursor:pointer">RESUME MATCH</button>';
 document.body.appendChild(wfPausePanel);
 function wfTogglePause(force){ wfPaused=typeof force==='boolean'?force:!wfPaused;wfPausePanel.style.display=wfPaused?'flex':'none'; }
 wfPausePanel.querySelector('#wfResume').addEventListener('click',()=>wfTogglePause(false));

@@ -1406,6 +1406,14 @@ function artFrameKey(e){
     const q=clamp(1-(e.stateT||0)/.34,0,1); // windup -> in-between -> extension -> hold
     return seqPick(e,['idle','reach','punchmid','punch','punch','punchmid','idle'], Math.min(6,Math.floor(q*7)));
   }
+  if(st==='clothesline'){
+    const q=clamp(1-(e.stateT||0)/.55,0,1);
+    return seqPick(e,['run','reach','punchmid','punch','reach','idle'],Math.min(5,Math.floor(q*6)));
+  }
+  if(st==='dropkick'){
+    const q=clamp(1-(e.stateT||0)/.62,0,1);
+    return seqPick(e,['run','kickmid','kick','kick','fall','fall'],Math.min(5,Math.floor(q*6)));
+  }
   if(st==='kick'){
     const q=clamp(1-(e.stateT||0)/.42,0,1); // chamber -> in-between -> extension -> hold
     return seqPick(e,['idle','kickmid','kickmid','kick','kick','kickmid','idle'], Math.min(6,Math.floor(q*7)));
@@ -1572,6 +1580,11 @@ function drawArtWrestler(e){
     ctx.rotate(Math.sin(phase*Math.PI)*(st==='kick' ? -.035 : .025));
   }else if(st==='hurt'){
     ctx.rotate(Math.sin((e.animT||0)*25)*.027);
+  }
+  if(st==='clothesline'||st==='dropkick'){
+    const total=st==='dropkick'?.62:.55,q=clamp(1-(e.stateT||0)/total,0,1);
+    if(st==='dropkick'){ctx.translate(face*10*Math.sin(q*Math.PI),-13*Math.sin(q*Math.PI));ctx.rotate(-face*.09*Math.sin(q*Math.PI));}
+    else {ctx.translate(face*5*Math.sin(q*Math.PI),0);ctx.rotate(face*.04*Math.sin(q*Math.PI));}
   }
   ctx.filter=depthFilter(e); // unified depth grade for this body
   // directional painted contact shadow: the arena key light sits upper
@@ -3203,8 +3216,9 @@ function cpuThink(e,dt,inp){
   if(inStrikeRange){
     e.face=dx>=0?1:-1;
     if(e.aiAttackT<=0&&e.endurance>=6&&e.stun<=0){
+      const runningHit=e.endurance>=26&&Math.random()<.20;
       const kick=e.endurance>=11&&Math.random()<.34;
-      strike(e,kick?'kick':'punch');
+      strike(e,runningHit?(Math.random()<.5?'clothesline':'dropkick'):(kick?'kick':'punch'));
       e.aiAttackT=rnd(.48,.87)+(e.endurance<27?.32:0);
     }
     return {mx:0,my:0};
@@ -3263,19 +3277,23 @@ function strike(e,kind){
     return;
   }
   if(!['idle','walk','run'].includes(e.state)||(e.attackCd||0)>0||e.stun>0)return;
-  const cost=kind==='punch'?6:11;
+  if(e.state==='run'&&kind==='punch')kind='clothesline';
+  else if(e.state==='run'&&kind==='kick')kind='dropkick';
+  const cost=kind==='punch'?6:kind==='kick'?11:kind==='clothesline'?19:24;
   if(e.endurance<cost){
     if(e.isPlayer||e.isPlayer2)combatText(e.x,e.y-115,'TIRED','#ffad75');
     e.attackCd=.3;return;
   }
   e.endurance-=cost;
-  e.state=kind; e.stateT=kind==='punch'?.34:.43;
-  e.attackCd=kind==='punch'?.39:.51;
+  e.state=kind; e.stateT=kind==='punch'?.34:kind==='kick'?.43:kind==='clothesline'?.55:.62;
+  e.attackCd=kind==='punch'?.39:kind==='kick'?.51:kind==='clothesline'?.78:1.06;
+  e.dropkickContact=false;
   e.strikeHitDone=false; e.moving=false;
   sfxWhoosh();
 }
 function resolveStrikeImpact(e,kind){
-  const range=kind==='punch'?92:104;
+  const special=kind==='clothesline'||kind==='dropkick';
+  const range=kind==='punch'?92:kind==='kick'?104:kind==='clothesline'?116:126;
   const foes=legalTarget(e).filter(o=>o.state!=='down'&&o.state!=='thrown'&&!o.elim);
   foes.sort((a,b)=>dist(e,a)-dist(e,b));
   for(const o of foes){
@@ -3293,11 +3311,11 @@ function resolveStrikeImpact(e,kind){
       say('COUNTER! '+o.f.name+' REVERSES THE STRIKE!','Perfect timing!');
       sfxSlap();hitStop=Math.max(hitStop,.065);return;
     }
-    const base=kind==='punch'?2.7+e.f.pow*.26:3.8+e.f.pow*.33;
+    const base=kind==='punch'?2.7+e.f.pow*.26:kind==='kick'?3.8+e.f.pow*.33:kind==='clothesline'?7.8+e.f.pow*.45:9.2+e.f.pow*.40;
     const staminaFactor=.67+.33*(Math.max(0,e.endurance)/100);
     const amount=base*staminaFactor*(e.hot>0?1.5:1);
     if(o.guarding && o.endurance>6){
-      o.endurance=Math.max(0,o.endurance-(kind==='kick'?19:12));
+      o.endurance=Math.max(0,o.endurance-(special?25:kind==='kick'?19:12));
       o.hp=Math.max(0,o.hp-amount*.2);
       o.stun=Math.max(o.stun,.07);
       o.x+=e.face*4;
@@ -3315,13 +3333,15 @@ function resolveStrikeImpact(e,kind){
     else e.comboHits=1;
     e.comboUntil=now+1550;
     const comboFin=e.comboHits===3;
-    dmg(o,amount*(comboFin?1.45:1),kind==='kick'&&Math.random()<.28);
+    dmg(o,amount*(comboFin?1.45:1),special||(kind==='kick'&&Math.random()<.28));
     sfxSlap(); hitStop=Math.max(hitStop,kind==='kick'?.075:.05);
     o.x+=e.face*(comboFin?25:kind==='kick'?16:10);
-    if(comboFin&&o.state!=='down')knockDown(o,1.3);
+    if(special&&o.state!=='down')knockDown(o,kind==='dropkick'?1.9:1.55);
+    else if(comboFin&&o.state!=='down')knockDown(o,1.3);
     else if(kind==='kick'&&o.hp<10&&o.state!=='down')knockDown(o,1.1);
-    combatText(o.x,o.y-125,comboFin?'3 HIT COMBO!':e.comboHits===2?'2 HIT COMBO':kind==='kick'?'KICK!':'HIT!',comboFin?'#ffe675':'#fff');
-    if(Math.random()<.35)vox(pickV(kind==='punch'?'punch':'kick',4),e.f.name+' CONNECTS!','strike',2400);
+    if(kind==='dropkick')e.dropkickContact=true;
+    combatText(o.x,o.y-125,kind==='clothesline'?'CLOTHESLINE!':kind==='dropkick'?'DROPKICK!':comboFin?'3 HIT COMBO!':e.comboHits===2?'2 HIT COMBO':kind==='kick'?'KICK!':'HIT!',special?'#ffd86e':comboFin?'#ffe675':'#fff');
+    if(Math.random()<.35)vox(pickV((kind==='punch'||kind==='clothesline')?'punch':'kick',4),e.f.name+' CONNECTS!','strike',2400);
     return;
   }
   // Still allow pins, ground finishers and stomps with delayed contact.
@@ -3577,15 +3597,19 @@ function updateEnt(e,dt,inp){
   }
   if(e.state==='hurt'){ e.moving=false; if(e.stateT<=0)e.state='idle'; return; }
   if(e.state==='taunt'||e.state==='hot'||e.state==='pin'){ e.moving=false; if(e.stateT<=0&&e.state!=='pin')e.state='idle'; return; }
-  if(e.state==='punch'||e.state==='kick'){
+  if(['punch','kick','clothesline','dropkick'].includes(e.state)){
     e.moving=false;
     const kind=e.state;
     // A strike becomes active halfway through its original animation;
     // target position and guard are checked at contact, not at button press.
-    if(!e.strikeHitDone && e.stateT<=(kind==='punch'?.16:.21)){
+    if(!e.strikeHitDone && e.stateT<=(kind==='punch'?.16:kind==='kick'?.21:kind==='clothesline'?.27:.30)){
       e.strikeHitDone=true;resolveStrikeImpact(e,kind);
     }
-    if(e.state===kind&&e.stateT<=0)e.state='idle';
+    if(e.state===kind&&e.stateT<=0){
+      if(kind==='dropkick'){
+        e.state='down';e.downT=e.dropkickContact?.55:1.05;e.fallT=.28;e.stun=.14;e.riseT=0;e.moving=false;
+      }else e.state='idle';
+    }
     return;
   }
   if(e.state==='finisher'){
@@ -3817,7 +3841,7 @@ function updateEnt(e,dt,inp){
     return;
   }
   // A fighter cannot skate across the ring while throwing a punch.
-  if(e.state==='punch'||e.state==='kick'){e.moving=false;return;}
+  if(['punch','kick','clothesline','dropkick'].includes(e.state)){e.moving=false;return;}
   // depth-scaled speed: bodies farther from the camera cross the
   // canvas a touch slower — the same perspective as their scale
   if(mv.run&&e.endurance>0)e.endurance=Math.max(0,e.endurance-12*dt);
@@ -4303,7 +4327,7 @@ let wfPaused=false, wfCounterUntil=0, wfCounterCooldown=0;
 const wfPausePanel=document.createElement('div');
 wfPausePanel.id='wfPausePanel';
 wfPausePanel.style.cssText='display:none;position:fixed;z-index:99999;inset:0;background:rgba(3,6,21,.92);color:#fff;align-items:center;justify-content:center;flex-direction:column;text-align:center;font:16px system-ui;padding:20px';
-wfPausePanel.innerHTML='<h1 style="color:#ffcf42">ONYX WRESTLEFEST — PAUSED</h1><p>WASD / Arrows: move · Z/J: punch · X/K: kick · F: grapple · G: whip · E: finisher</p><p><b>Y: hold BLOCK</b> · <b>T: timed COUNTER</b> · 3 consecutive hits = combo knockdown · P2 guard O / counter [</p><p><b>GRAPPLE:</b> Hold ↑/↓/←/→ then tap Punch or Kick for 8 throws (suplex, scoop slam, hip toss, backbreaker, powerbomb, piledriver, snapmare, neckbreaker). Kick without direction / G = Irish Whip.</p><p>Stamina is blue beneath the health bar. Running, striking and blocking cost stamina. H: climb in cage/ladder matches · Escape: resume.</p><button id="wfResume" style="padding:14px 32px;background:#ffd21f;border:0;border-radius:8px;font-weight:900;cursor:pointer">RESUME MATCH</button>';
+wfPausePanel.innerHTML='<h1 style="color:#ffcf42">ONYX WRESTLEFEST — PAUSED</h1><p>WASD / Arrows: move · Z/J: punch · X/K: kick · F: grapple · G: whip · E: finisher</p><p><b>Y: hold BLOCK</b> · <b>T: timed COUNTER</b> · 3 consecutive hits = combo knockdown · P2 guard O / counter [</p><p><b>RUN + PUNCH</b> = Clothesline · <b>RUN + KICK</b> = Dropkick (land on the mat after kicking).</p><p><b>GRAPPLE:</b> Hold ↑/↓/←/→ then tap Punch or Kick for 8 throws (suplex, scoop slam, hip toss, backbreaker, powerbomb, piledriver, snapmare, neckbreaker). Kick without direction / G = Irish Whip.</p><p>Stamina is blue beneath the health bar. Running, striking and blocking cost stamina. H: climb in cage/ladder matches · Escape: resume.</p><button id="wfResume" style="padding:14px 32px;background:#ffd21f;border:0;border-radius:8px;font-weight:900;cursor:pointer">RESUME MATCH</button>';
 document.body.appendChild(wfPausePanel);
 function wfTogglePause(force){ wfPaused=typeof force==='boolean'?force:!wfPaused;wfPausePanel.style.display=wfPaused?'flex':'none'; }
 wfPausePanel.querySelector('#wfResume').addEventListener('click',()=>wfTogglePause(false));

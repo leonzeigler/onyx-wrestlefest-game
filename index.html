@@ -1545,19 +1545,27 @@ function drawArtWrestler(e){
      on his floor point so both men's feet stay on his depth. */
   if(e.state==='pairvic') return true;
   if(e.state==='pairseq'&&e.pairSeq&&e.pairSeq.length){
-    const seq=e.pairSeq, bn=seq[Math.min(seq.length-1,Math.floor(clamp((e.pairT||0)/(e.pairDur||.95),0,1)*seq.length))];
-    const im=PAIRIMG[bn];
+    // Source frames have different crop heights: keep the exact same pixel
+    // scale across the lift and ground impact, never stretch the slam picture.
+    const seq=e.pairSeq;
+    const q=clamp((e.pairT||0)/(e.pairDur||.95),0,.9999);
+    const idx=seq.length===3?(q<.26?0:q<.68?1:2):Math.min(seq.length-1,Math.floor(q*seq.length));
+    const im=PAIRIMG[seq[idx]];
     if(im&&im.complete&&im.naturalWidth>0){
-      const dT2=depthT(e), H2=FIG_H*1.24*(f.hScale||1)*(e.scaleMul||1)*depthS(e);
-      const dw2=H2*im.naturalWidth/im.naturalHeight, face2=e.face||1;
+      const H2=FIG_H*1.24*(f.hScale||1)*(e.scaleMul||1)*depthS(e);
+      const referenceH=Math.max(im.naturalHeight,...seq.map(k=>PAIRIMG[k]?.naturalHeight||0));
+      const referenceW=Math.max(im.naturalWidth,...seq.map(k=>PAIRIMG[k]?.naturalWidth||0));
+      const scale=H2/referenceH, dh2=im.naturalHeight*scale, dw2=im.naturalWidth*scale;
+      const shadowWidth=referenceW*scale, face2=e.face||1;
       ctx.save(); ctx.translate(e.x,e.y); ctx.filter=depthFilter(e);
+      ctx.imageSmoothingEnabled=false; // pixel-crisp transparent bodies, no black smearing
       ctx.save(); ctx.translate(6,4); ctx.rotate(.05);
-      const sg2=ctx.createRadialGradient(0,0,1,0,0,dw2*.44);
+      const sg2=ctx.createRadialGradient(0,0,1,0,0,shadowWidth*.44);
       sg2.addColorStop(0,'rgba(4,6,28,.6)'); sg2.addColorStop(1,'rgba(4,6,28,0)');
-      ctx.scale(1,10/Math.max(20,dw2*.44)); ctx.fillStyle=sg2;
-      ctx.beginPath(); ctx.ellipse(0,0,dw2*.44,dw2*.44,0,0,6.29); ctx.fill(); ctx.restore();
+      ctx.scale(1,10/Math.max(20,shadowWidth*.44)); ctx.fillStyle=sg2;
+      ctx.beginPath(); ctx.ellipse(0,0,shadowWidth*.44,shadowWidth*.44,0,0,6.29); ctx.fill(); ctx.restore();
       ctx.scale(face2,1);
-      ctx.drawImage(im,-dw2/2,3-H2,dw2,H2);
+      ctx.drawImage(im,-dw2/2,3-dh2,dw2,dh2);
       ctx.restore(); return true;
     }
     // painting not loaded yet: fall through to the attacker's own frames

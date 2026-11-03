@@ -659,7 +659,7 @@ for(const id in ART){
    as the over-the-fighters layer. The painted crowd wall remains
    only for the entrance screen and the no-image fallback. */
 const SCENE={};
-for(const k of ['crowd','ring','ringfront']){ const im=new Image(); im.src='assets/'+(k==='crowd'?'crowd_painted':k==='ring'?'ring_arena':'ring_front_rip')+'.webp'; SCENE[k]=im; }
+for(const k of ['crowd','ring','ringfront']){ const im=new Image(); im.src='assets/'+(k==='crowd'?'crowd_painted':k==='ring'?'skull_arcade_stage':'skull_arcade_front')+(k==='crowd'?'.webp':'.svg'); SCENE[k]=im; }
 const sceneOk=k=>{ const im=SCENE[k]; return im&&im.complete&&im.naturalWidth>0; };
 const IMG={};
 for(const id in ART){ IMG[id]={}; for(const k in ART[id]){ const im=new Image(); im.src='assets/art/'+ART[id][k]+'.webp'; IMG[id][k]=im; } }
@@ -1384,8 +1384,8 @@ function seqPick(e,seq,idx){
   for(let i=0;i<n;i++){ const k=seq[(((idx+i)%n)+n)%n]; if(artOk(e.f.id,k)) return k; }
   return seq[0];
 }
-function walkSeq(e){ const i=Math.floor((e.legPhase||0)/(Math.PI/2))%4; return seqPick(e,['walk','walk3','walk2','walk3'],i); }
-function runSeq(e){ const i=Math.floor((e.legPhase||0)/(Math.PI/2))%4; return seqPick(e,['run','runpass','walk2','runpass'],i); }
+function walkSeq(e){ const i=Math.floor((e.legPhase||0)/(Math.PI/4))%8; return seqPick(e,['walk','walk3','walk2','walk3','walk','walk2','walk3','walk2'],i); }
+function runSeq(e){ const i=Math.floor((e.legPhase||0)/(Math.PI/4))%8; return seqPick(e,['run','runpass','walk','runpass','run','walk2','runpass','walk3'],i); }
 function artFrameKey(e){
   const st=e.state||'idle';
   if(e.ctrl==='apron'){ // the apron system has its own frame set
@@ -1404,11 +1404,11 @@ function artFrameKey(e){
   }
   if(st==='punch'||st==='strike'){
     const q=clamp(1-(e.stateT||0)/.34,0,1); // windup -> in-between -> extension -> hold
-    return seqPick(e,['idle','punchmid','punch','punch'], Math.min(3,Math.floor(q*4)));
+    return seqPick(e,['idle','reach','punchmid','punch','punch','punchmid','idle'], Math.min(6,Math.floor(q*7)));
   }
   if(st==='kick'){
     const q=clamp(1-(e.stateT||0)/.42,0,1); // chamber -> in-between -> extension -> hold
-    return seqPick(e,['idle','kickmid','kick','kick'], Math.min(3,Math.floor(q*4)));
+    return seqPick(e,['idle','kickmid','kickmid','kick','kick','kickmid','idle'], Math.min(6,Math.floor(q*7)));
   }
   if(st==='grapple'||st==='grapplewin'||st==='pairmove'){
     const i=Math.floor((e.animT||0)*7)%4; // the lock-up strains back and forth
@@ -1554,6 +1554,18 @@ function drawArtWrestler(e){
   const down=key==='prone';
   ctx.save();
   ctx.translate(e.x,e.y);
+  // In-ring arcade motion: small airborne heel beats and committed torso recoil.
+  // Visual-only transforms; physics, hitboxes, controls and network inputs are unchanged.
+  if(st==='walk'||st==='run'||st==='whipped'||st==='fincharge'){
+    const running=st!=='walk', phase=e.legPhase||0;
+    ctx.translate(0,-Math.abs(Math.sin(phase))*(running?4.5:2.2));
+    ctx.rotate(Math.sin(phase)*(running?.018:.009));
+  }else if(st==='punch'||st==='strike'||st==='kick'){
+    const total=st==='kick'?.42:.34, phase=clamp(1-(e.stateT||0)/total,0,1);
+    ctx.rotate(Math.sin(phase*Math.PI)*(st==='kick' ? -.035 : .025));
+  }else if(st==='hurt'){
+    ctx.rotate(Math.sin((e.animT||0)*25)*.027);
+  }
   ctx.filter=depthFilter(e); // unified depth grade for this body
   // directional painted contact shadow: the arena key light sits upper
   // left, so the shadow falls down-right — a dark core where the feet /
@@ -2088,7 +2100,7 @@ function drawRingBase(){
     // squashed into the mat's perspective (the rip's mat emblem was
     // retired with the federation marks — this is the mat's brand)
     ctx.save(); ctx.translate(W/2,446); ctx.scale(1,.60); ctx.globalAlpha=.50;
-    drawLogoStacked(0,-118,470); // the same lockup, squashed into the mat's perspective
+    /* The skull-arena SVG already includes a mat crest; keep it legible. */
     ctx.restore(); ctx.textBaseline='alphabetic';
     // the rip's own back/side ropes are faint to invisible at match
     // scale, so the rope rows are DRAWN over the base, behind the
